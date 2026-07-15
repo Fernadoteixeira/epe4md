@@ -1,0 +1,27 @@
+{
+    "name":  "@epe4md/mcp-server",
+    "version":  "0.1.4",
+    "private":  true,
+    "type":  "module",
+    "description":  "Typed MCP server for the EPE 4MD distributed-generation market model",
+    "exports":  "./dist/index.js",
+    "bin":  {
+                "epe4md-mcp":  "./dist/main.js"
+            },
+    "scripts":  {
+                    "build":  "tsc -p tsconfig.json",
+                    "start":  "node dist/main.js",
+                    "test":  "npm run build \u0026\u0026 node --test dist/**/*.test.js"
+                },
+    "dependencies":  {
+                         "@modelcontextprotocol/sdk":  "^1.22.0",
+                         "zod":  "^3.24.0"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "^22.0.0",
+                            "typescript":  "^5.7.0"
+                        },
+    "engines":  {
+                    "node":  "\u003e=20"
+                }
+}

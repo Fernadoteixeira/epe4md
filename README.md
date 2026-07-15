@@ -29,3 +29,10 @@ devtools::install_github("EPE-GOV-BR/epe4md")
 ## Como usar
 
 Acesse os tutoriais no site <https://epe-gov-br.github.io/epe4md/>
+
+## Implementações Python, TypeScript e MCP
+
+A conversão inclui o pacote Python em `python/` e o servidor MCP TypeScript em
+`typescript/`; ambos usam as planilhas de premissas existentes. Consulte
+`python/pyproject.toml` e `typescript/package.json` para instalação e execução.
+As funções de gráfico retornam especificações serializáveis, não objetos `ggplot2`.
