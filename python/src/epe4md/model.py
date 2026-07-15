@@ -194,11 +194,13 @@ def epe4md_mercado_potencial(ano_base: int, filtro_renda_domicilio: str = "maior
         all_years["consumidores"] = all_years.groupby("nome_4md")["consumidores"].ffill()
         if annual_growth is None:
             last_year = int(observed["ano"].max())
-            future_growth = growth[growth["ano"] > last_year][["ano", "crescimento_acumulado"]]
+            future_growth = growth[growth["ano"] > last_year][["ano", "taxa_crescimento_mercado"]].copy()
+            future_growth["crescimento_acumulado"] = (1 + future_growth["taxa_crescimento_mercado"]).cumprod()
             all_years = all_years.merge(future_growth, on="ano", how="left")
             all_years["consumidores_proj"] = np.where(all_years["crescimento_acumulado"].notna(), (all_years["consumidores"] * all_years["crescimento_acumulado"]).round(), all_years["consumidores"])
         else:
-            all_years["steps"] = all_years.groupby("nome_4md")["consumidores"].transform(lambda values: values.isna().cumsum())
+            last_year = int(observed["ano"].max())
+            all_years["steps"] = (all_years["ano"] - last_year).clip(lower=0)
             all_years["consumidores_proj"] = (all_years["consumidores"] * (1 + annual_growth) ** all_years["steps"]).round()
         return all_years[["nome_4md", "ano", "consumidores_proj"]]
     commercial = market_customers("consumidores_b2b3.xlsx")
@@ -248,9 +250,11 @@ def epe4md_calibra_curva_s(resultado_payback: pd.DataFrame | list[dict[str, Any]
     consumer_data = records_to_dataframe(consumidores.get("consumidores"), "consumidores.consumidores")
     history = load_workbook(ano_base, "base_mmgd.xlsx", dir_dados_premissas)
     history = history[history["ano"] <= ano_base].groupby(["nome_4md", "segmento", "ano"], as_index=False)["qtde_u_csrecebem_os_creditos"].sum().rename(columns={"qtde_u_csrecebem_os_creditos": "adotantes_hist"})
-    historical = results[results["ano"] <= ano_base][["nome_4md", "segmento", "ano", "payback", "payback_desc"]].copy()
-    historical["payback"] = np.where(historical["segmento"].isin(["residencial", "residencial_remoto"]), historical["payback"], historical["payback_desc"])
-    calibration = historical.merge(consumer_data, on=["nome_4md", "segmento", "ano"], how="left").merge(history, on=["nome_4md", "segmento", "ano"], how="left")
+    fitting_history = results[results["ano"] <= ano_base][["nome_4md", "segmento", "ano", "payback", "payback_desc"]].copy()
+    fitting_history["payback"] = np.where(fitting_history["segmento"].isin(["residencial", "residencial_remoto"]), fitting_history["payback"], fitting_history["payback_desc"])
+    payback_by_year = results[["nome_4md", "segmento", "ano", "payback", "payback_desc"]].copy()
+    payback_by_year["payback"] = np.where(payback_by_year["segmento"].isin(["residencial", "residencial_remoto"]), payback_by_year["payback"], payback_by_year["payback_desc"])
+    calibration = fitting_history.merge(consumer_data, on=["nome_4md", "segmento", "ano"], how="left").merge(history, on=["nome_4md", "segmento", "ano"], how="left")
     calibration["adotantes_hist"] = calibration["adotantes_hist"].fillna(0)
     calibration = calibration.sort_values("ano")
     calibration["adotantes_acum"] = calibration.groupby(["nome_4md", "segmento"])["adotantes_hist"].cumsum()
@@ -263,7 +267,7 @@ def epe4md_calibra_curva_s(resultado_payback: pd.DataFrame | list[dict[str, Any]
     years = pd.DataFrame({"ano": range(2013, min(ano_max_resultado, 2050) + 1)})
     optimized = pd.DataFrame(parameters).merge(years, how="cross")
     optimized["Ft"] = _bass_fraction(optimized["p"], optimized["q"], optimized["ano"] - 2012)
-    optimized = optimized.merge(consumer_data, on=["nome_4md", "segmento", "ano"], how="left").merge(historical[["nome_4md", "segmento", "ano", "payback"]], on=["nome_4md", "segmento", "ano"], how="left")
+    optimized = optimized.merge(consumer_data, on=["nome_4md", "segmento", "ano"], how="left").merge(payback_by_year[["nome_4md", "segmento", "ano", "payback"]], on=["nome_4md", "segmento", "ano"], how="left")
     if optimized[["consumidores", "payback"]].isna().any().any():
         raise ValueError("Dados de consumidores ou payback ausentes na curva de difusão.")
     optimized["mercado_potencial"] = (np.exp(-spb * optimized["payback"]) * optimized["consumidores"]).round().clip(lower=1)
@@ -288,9 +292,10 @@ def epe4md_proj_adotantes(casos_otimizados: pd.DataFrame | list[dict[str, Any]],
     shares["part_fonte"] = shares["qtde_u_csrecebem_os_creditos"] / shares.groupby(["nome_4md", "segmento"])["qtde_u_csrecebem_os_creditos"].transform("sum")
     historical = history[history["ano"] <= ano_base].groupby(["ano", "nome_4md", "segmento", "fonte_resumo"], as_index=False)["qtde_u_csrecebem_os_creditos"].sum().rename(columns={"qtde_u_csrecebem_os_creditos": "adotantes_hist"})
     projected = projected.merge(shares[["nome_4md", "segmento", "fonte_resumo", "part_fonte"]], on=["nome_4md", "segmento"], how="left").merge(historical, on=["ano", "nome_4md", "segmento", "fonte_resumo"], how="left")
-    projected["part_fonte"] = projected["part_fonte"].fillna(
-        pd.Series(np.where(projected["fonte_resumo"].eq("Fotovoltaica"), 1, 0), index=projected.index)
-    )
+    projected["part_fonte"] = projected["part_fonte"].fillna(0)
+    source_totals = projected.groupby(["nome_4md", "segmento"])["part_fonte"].transform("sum")
+    no_source_history = source_totals.eq(0)
+    projected.loc[no_source_history & projected["fonte_resumo"].eq("Fotovoltaica"), "part_fonte"] = 1
     projected["adotantes_ano"] = (projected["adotantes_ano"] * projected["part_fonte"]).round()
     projected.loc[projected["ano"] <= ano_base, "adotantes_ano"] = projected.loc[projected["ano"] <= ano_base, "adotantes_hist"].fillna(0)
     projected["adotantes_acum"] = projected.groupby(["nome_4md", "segmento", "fonte_resumo"])["adotantes_ano"].cumsum()
@@ -378,7 +383,7 @@ def epe4md_proj_geracao(proj_mensal: pd.DataFrame | list[dict[str, Any]], ano_ba
     if monthly.empty: return pd.DataFrame(columns=["data", "ano", "mes", "nome_4md", "subsistema", "uf", "segmento", "fonte_resumo", "energia_mwh", "energia_autoc_mwh", "energia_inj_mwh", "energia_mwmed", "pot_mes_mw", "adotantes_mes", "p", "q", "regiao"])
     # Each monthly installation produces through the requested horizon; this mirrors the R installation-to-operation expansion.
     final_year = int(monthly["ano"].max())
-    operations = pd.date_range("2013-01-01", f"{final_year}-12-01", freq="MS")
+    operations = pd.date_range("2013-01-31", f"{final_year}-12-31", freq="ME")
     installations = monthly.assign(_key=1).merge(pd.DataFrame({"operacao": operations, "_key": 1}), on="_key").drop(columns="_key")
     installations["instalacao"] = installations["data_conexao"] + pd.Timedelta(days=14)
     installations = installations[installations["operacao"] > installations["instalacao"]]
