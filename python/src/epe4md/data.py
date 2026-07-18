@@ -5,12 +5,18 @@ from pathlib import Path
 import pandas as pd
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_DATA_DIRECTORY = PACKAGE_ROOT / "inst" / "dados_premissas"
+PACKAGED_DATA_DIRECTORY = Path(__file__).resolve().parent / "dados_premissas"
+REPOSITORY_DATA_DIRECTORY = PACKAGE_ROOT / "inst" / "dados_premissas"
 
 
 def premise_directory(ano_base: int, directory: str | Path | None = None) -> Path:
     """Resolve and validate the directory containing premise workbooks."""
-    selected = Path(directory) if directory else DEFAULT_DATA_DIRECTORY / str(ano_base)
+    if directory:
+        selected = Path(directory)
+    else:
+        selected = PACKAGED_DATA_DIRECTORY / str(ano_base)
+        if not selected.is_dir():
+            selected = REPOSITORY_DATA_DIRECTORY / str(ano_base)
     if not selected.is_dir():
         raise ValueError(
             f"Diretório de premissas não encontrado: {selected}. "
@@ -44,7 +50,7 @@ def require_columns(dataframe: pd.DataFrame, columns: list[str], parameter_name:
 
 def result_records(value: object) -> object:
     if isinstance(value, pd.DataFrame):
-        clean = value.where(pd.notna(value), None)
+        clean = value.astype(object).where(pd.notna(value), None)
         return clean.to_dict(orient="records")
     if isinstance(value, dict):
         return {key: result_records(item) for key, item in value.items()}

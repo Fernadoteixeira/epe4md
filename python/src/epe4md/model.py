@@ -295,6 +295,12 @@ def epe4md_proj_adotantes(casos_otimizados: pd.DataFrame | list[dict[str, Any]],
     projected["part_fonte"] = projected["part_fonte"].fillna(0)
     source_totals = projected.groupby(["nome_4md", "segmento"])["part_fonte"].transform("sum")
     no_source_history = source_totals.eq(0)
+    missing_pv = projected[no_source_history & projected["fonte_resumo"].isna()].copy()
+    if not missing_pv.empty:
+        missing_pv["fonte_resumo"] = "Fotovoltaica"
+        missing_pv["part_fonte"] = 1
+        projected = pd.concat([projected[~(no_source_history & projected["fonte_resumo"].isna())], missing_pv], ignore_index=True)
+    no_source_history = projected.groupby(["nome_4md", "segmento"])["part_fonte"].transform("sum").eq(0)
     projected.loc[no_source_history & projected["fonte_resumo"].eq("Fotovoltaica"), "part_fonte"] = 1
     projected["adotantes_ano"] = (projected["adotantes_ano"] * projected["part_fonte"]).round()
     projected.loc[projected["ano"] <= ano_base, "adotantes_ano"] = projected.loc[projected["ano"] <= ano_base, "adotantes_hist"].fillna(0)
@@ -356,7 +362,31 @@ def epe4md_proj_mensal(lista_potencia: dict[str, Any], ano_base: int, filtro_nom
         observed = history[history["data_conexao"] <= cutoff].copy()
         historical = observed.rename(columns={"potencia_mw": "pot_mes_mw", "qtde_u_csrecebem_os_creditos": "adotantes_mes"})[["data_conexao", "ano", "mes", "nome_4md", "fonte_resumo", "segmento", "pot_mes_mw", "adotantes_mes"]]
         if metodo_ajuste == "substitui": future = future[future["data_conexao"] > cutoff]
-        else: future = future[future["ano"] > ano_base + 1]
+        else:
+            current_year = observed[observed["ano"].eq(ano_base + 1)].groupby(
+                ["ano", "nome_4md", "segmento", "fonte_resumo"], as_index=False
+            )[["potencia_mw", "qtde_u_csrecebem_os_creditos"]].sum()
+            if not current_year.empty:
+                current_year["potencia_mw"] *= 12 / ultimo_mes_ajuste
+                current_year["qtde_u_csrecebem_os_creditos"] = (
+                    current_year["qtde_u_csrecebem_os_creditos"] * 12 / ultimo_mes_ajuste
+                ).round()
+                extrapolated = current_year.merge(pd.DataFrame({"mes": range(1, 13)}), how="cross")
+                extrapolated["data_conexao"] = pd.to_datetime(
+                    dict(year=extrapolated["ano"], month=extrapolated["mes"], day=1)
+                )
+                extrapolated["pot_mes_mw"] = extrapolated["potencia_mw"] * extrapolated["mes"].map(factors) / 12
+                extrapolated["adotantes_mes"] = (
+                    extrapolated["qtde_u_csrecebem_os_creditos"] * extrapolated["mes"].map(factors) / 12
+                ).round()
+                future = pd.concat(
+                    [future[future["ano"] > ano_base + 1], extrapolated[
+                        ["data_conexao", "ano", "mes", "nome_4md", "fonte_resumo", "segmento", "pot_mes_mw", "adotantes_mes"]
+                    ]],
+                    ignore_index=True,
+                )
+            else:
+                future = future[future["ano"] > ano_base + 1]
     output = pd.concat([historical, future[["data_conexao", "ano", "mes", "nome_4md", "fonte_resumo", "segmento", "pot_mes_mw", "adotantes_mes"]]], ignore_index=True)
     factors_pq = annual[["ano", "segmento", "fonte_resumo", "nome_4md", "p", "q", "Ft"]].drop_duplicates()
     output = output.merge(factors_pq, on=["ano", "segmento", "fonte_resumo", "nome_4md"], how="left")
@@ -391,7 +421,7 @@ def epe4md_proj_geracao(proj_mensal: pd.DataFrame | list[dict[str, Any]], ano_ba
     installations = installations.merge(other, left_on=["subsistema", "fonte_resumo", "mes_operacao"], right_on=["subsistema", "fonte_resumo", "mes"], how="left").merge(photovoltaic, left_on=["nome_4md", "mes_operacao"], right_on=["nome_4md", "mes"], how="left", suffixes=("", "_fotovoltaica"))
     installations["fc"] = np.where(installations["fonte_resumo"].eq("Fotovoltaica") & installations["segmento"].eq("comercial_at_remoto"), installations["fc_remoto"], np.where(installations["fonte_resumo"].eq("Fotovoltaica"), installations["fc_local"], installations["fc"]))
     if installations["fc"].isna().any(): raise ValueError("Fator de capacidade mensal ausente para uma instalação.")
-    elapsed = (installations["operacao"] - installations["instalacao"]).dt.days.clip(upper=25 * 365)
+    elapsed = (installations["operacao"] - installations["instalacao"]).dt.days % (25 * 365)
     days = installations["operacao"].dt.days_in_month
     first_month = (installations["operacao"] - installations["instalacao"]).dt.days < 28
     operating_days = np.where(first_month, days - 15, days)
@@ -403,7 +433,11 @@ def epe4md_proj_geracao(proj_mensal: pd.DataFrame | list[dict[str, Any]], ano_ba
     installations["energia_inj_mwh"] = installations["energia_mwh"] * (1 - installations["fator_autoconsumo"])
     keys = ["operacao", "nome_4md", "subsistema", "uf", "segmento", "fonte_resumo"]
     energy = installations.groupby(keys, as_index=False)[["energia_mwh", "energia_autoc_mwh", "energia_inj_mwh"]].sum()
-    power = monthly.groupby(["data_conexao", "nome_4md", "subsistema", "uf", "segmento", "fonte_resumo"], as_index=False)[["pot_mes_mw", "adotantes_mes"]].sum().rename(columns={"data_conexao": "operacao"})
+    power = monthly.assign(
+        operacao=monthly["data_conexao"].dt.to_period("M").dt.to_timestamp("M")
+    ).groupby(["operacao", "nome_4md", "subsistema", "uf", "segmento", "fonte_resumo"], as_index=False)[
+        ["pot_mes_mw", "adotantes_mes"]
+    ].sum()
     output = energy.merge(power, on=keys, how="outer").fillna({"pot_mes_mw": 0, "adotantes_mes": 0})
     output["data"] = output["operacao"].dt.date.astype(str)
     output["ano"] = output["operacao"].dt.year

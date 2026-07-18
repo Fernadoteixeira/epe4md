@@ -21,5 +21,5 @@ def main() -> None:
     if not isinstance(arguments, dict): raise TypeError("arguments deve ser um objeto JSON.")
     function = getattr(epe4md, function_name, None)
     if function is None: raise ValueError(f"Função pública desconhecida: {function_name}.")
-    print(json.dumps(result_records(function(**arguments)), ensure_ascii=False, default=_json_default))
+    print(json.dumps(result_records(function(**arguments)), ensure_ascii=False, allow_nan=False, default=_json_default))
 if __name__ == "__main__": main()
